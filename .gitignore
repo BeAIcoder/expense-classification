@@ -1,0 +1,29 @@
+# 数据文件（含真实业务数据）
+*.xlsx
+*.xls
+*.csv
+数据处理报告_*.txt
+系统测试报告_*.txt
+信息系统成本调整报告_*.md
+
+# 真实项目配置（仅提交 config.example.py）
+config.py
+
+# 构建
+build/
+dist/
+*.spec
+
+# 环境
+.venv/
+venv/
+__pycache__/
+*.pyc
+.mimosa/
+**/.mimosa/
+
+# 系统
+.DS_Store
+Thumbs.db
+*.log
+Python环境清理报告.md
