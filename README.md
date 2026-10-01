@@ -51,7 +51,9 @@ PROJECT_SPECIAL_RULES = {
 }
 ```
 
-注意：**费用分类规则已外置可配**：28 类规则（`CLASSIFICATION_RULES` 覆盖/追加）、
+注意：**费用分类规则已外置可配**：28 类规则存放于 `classification_rules.json`
+（单一权威源，由 `rules_loader.py` 加载，顺序即匹配优先级）；
+`CLASSIFICATION_RULES` 可覆盖已有类别（按字段 update）或追加新类别（追加在末尾）；
 特殊规则链关键词（`SPECIAL_RULES_CONFIG`：押金/保证金退回、增值税转出、信息系统）、
 科目名称归组映射（`ACCOUNT_NAME_MAPPINGS`）均可通过 `config.py` 调整，改配置即生效，
 无需改源码重新打包；清洗排除模式通过 `CLASSIFICATION_CONFIG.exclusion_patterns` 配置。
@@ -63,6 +65,8 @@ PROJECT_SPECIAL_RULES = {
 ├── expense_classification.py      # 核心分类引擎
 ├── expense_classification_gui.py  # GUI 界面
 ├── bank_ledger_summary.py        # 银行台账汇总
+├── rules_loader.py               # 分类规则 JSON 加载器（含 config 覆盖）
+├── classification_rules.json     # 分类规则单一权威源（28 类，顺序敏感）
 ├── config.example.py             # 示例配置（复制为 config.py 后生效）
 ├── test_expense_classification.py # 全量测试（pytest / unittest）
 ├── 用户操作说明书.md             # 详细操作手册

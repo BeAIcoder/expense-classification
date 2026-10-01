@@ -81,8 +81,9 @@ CLASSIFICATION_CONFIG = {
     'exclusion_patterns': [r'损益结转', r'结转.*损益', r'重新计提', r'期末结转'],
 }
 
-# 费用分类规则覆盖（可选）：28 类默认规则内置在引擎 get_classification_rules()，
-# 此处与默认规则同名的类别按字段覆盖（如只改 keywords），不同名的类别追加到末尾。
+# 费用分类规则覆盖（可选）：28 类默认规则存放于 classification_rules.json
+# （单一权威源，由 rules_loader.py 加载），此处同名类别按字段覆盖
+# （如只改 keywords），不同名的类别追加到末尾。
 # 注意顺序敏感的遮蔽关系：POS刷卡手续费 必须在 财务费用 之前，招商费用 必须在 行政费用 之前。
 # 示例：
 # CLASSIFICATION_RULES = {

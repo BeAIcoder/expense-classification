@@ -19,6 +19,11 @@ try:
 except Exception:
     _app_config = None
 
+# 分类规则单一权威源（2026-10-01 数据化重构）：
+# 28 类规则 dict 已从本文件迁至 classification_rules.json，
+# 由 rules_loader 加载；config.py 的 CLASSIFICATION_RULES 覆盖语义不变。
+from rules_loader import load_classification_rules
+
 
 def _cfg(dotted_key, default):
     """按 'SECTION.key' 路径从 config.py 读取配置，任何一级缺失即回退默认值"""
@@ -609,184 +614,14 @@ class ExpenseClassifier:
             return None
     
     def get_classification_rules(self):
-        """获取费用分类映射规则 (v2.0 重构版)
+        """获取费用分类映射规则（v2.x 数据化版）
 
-        内置 28 类默认规则；可通过 config.py 的 CLASSIFICATION_RULES 覆盖已有类别
-        （按字段 update）或追加新类别（追加在末尾，注意顺序敏感的遮蔽关系）。
-        修改配置即生效，无需改源码重新打包。
-
-        Returns:
-            费用分类规则字典
+        规则单一权威源为包内 classification_rules.json，由 rules_loader 加载；
+        config.py 的 CLASSIFICATION_RULES 仍可覆盖已有类别（按字段 update）
+        或追加新类别（追加在末尾，注意顺序敏感的遮蔽关系），覆盖机制与
+        数据化前完全一致。修改规则请编辑 JSON 或 config，无需改本源码。
         """
-        classification_rules = {
-            # 1. 收入类 (单独分类)
-            '经营收入': {
-                'keywords': ['收到', '收入', '租金收入', '管理费收入', '广告收入', '退税', '收到返还', '退还'],
-                'type': 'INFLOW',
-                'description': '各类经营性收入及退税/退费流入（关键词为子串匹配，勿用正则写法）'
-            },
-            
-            # 2. 支出类 - 经营性费用 (OPEX)
-            '人工成本': {
-                'keywords': ['社保', '社会保险', '公积金', '个税', '个人所得税', '绩效', '奖金', '餐费', '餐补', '职工教育', '培训', '补偿金', '赔偿金', '工资', '薪金'],
-                'type': 'EXPENSE',
-                'description': '在职人工及外包人工劳务费'
-            },
-            '外包人工': {
-                'keywords': ['外包', '薪班班', '劳务派遣', '劳务外包', '外委服务'],
-                'type': 'EXPENSE',
-                'description': '薪班班等外包劳务费'
-            },
-            '物业成本': {
-                'keywords': ['物业', '物业费', '绿化', '养护', '保洁', '保安', '特约保洁'],
-                # 注意：搬运/搬家费归行政费用，不归物业成本
-                'exclude_keywords': ['搬运', '搬家', '搬运服务'],
-                'type': 'EXPENSE',
-                'description': '保洁、保安、绿化等整体物业支出'
-            },
-            '工程成本': {
-                'keywords': ['工程', '维护', '维修', '更换', '修理', '修缮', '养护', '广告位维护'],
-                'exclude_keywords': ['改造', '装修'],
-                'type': 'EXPENSE',
-                'description': '日常设备维护、零星维修'
-            },
-            '公共事业费': {
-                'keywords': ['燃气', '天然气', '煤气', '电费', '水费'],
-                'type': 'EXPENSE',
-                'description': '燃气、水、电等能源支出'
-            },
-            '信息系统成本': {
-                'keywords': ['网络', '网络使用费', '硬件', '硬件维护', '软件', '软件维护', '系统', '信息系统', 'IT', '信息化', '弱电布线', '宽带费', '客流', '软件许可', '备件采购', '布线'],
-                'type': 'EXPENSE',
-                'description': 'IT、信息化、宽带等运维支出'
-            },
-            # 招商费用必须排在行政费用之前：避免"招商部出差差旅费"被行政费用的"差旅"截走
-            '招商费用': {
-                'keywords': ['招商', '招商部'],
-                'type': 'EXPENSE',
-                'description': '招商部门专项费用'
-            },
-            '行政费用': {
-                'keywords': ['搬运', '搬家', '租房', '房租', '办公用品', '办公采购', '中介', '服务费', '法务', '律师', '常法', '法律', '顾问费', '诉讼', '起诉', '案件', '公告费', '接待', '招待', '出差', '差旅', '差旅费', '日常用品', '邮递费', '邮寄费', '办公', '接待费用', '接待费'],
-                'type': 'EXPENSE',
-                'description': '办公、差旅、接待、法务、水电费等行政管理费'
-            },
-            '企划类费用': {
-                'keywords': ['活动', '年框', '物料', '美陈', '赢商', '策划', '推广', '宣传', '美陈制作'],
-                'type': 'EXPENSE',
-                'description': '活动、策划、美陈制作等宣传费'
-            },
-            # POS刷卡手续费必须在财务费用之前，避免"待清算商户款项...手续费"被财务费用截走
-            'POS刷卡手续费': {
-                'keywords': ['刷卡', 'pos', '待清算商户款项'],
-                'type': 'EXPENSE',
-                'description': 'POS机刷卡专项手续费（含待清算商户款项转账手续费）'
-            },
-            '财务费用': {
-                'keywords': ['手续费', '银行手续费', '汇兑', '利息', '银行手续'],
-                'exclude_keywords': ['pos', '刷卡', '待清算商户款项'],
-                'type': 'EXPENSE',
-                'description': '常规银行手续费'
-            },
-
-            # 3. 支出类 - 非经营性/资本性
-            '税金支出': {
-                'keywords': ['税金', '税费', ' tax', ' Tax', '城建税', '教育费附加', '地方教育附加', '印花税', '房产税', '土地使用税'],
-                'exclude_keywords': ['转出', '调拨', '退税'],
-                'type': 'EXPENSE',
-                'description': '实际缴纳的各类税金'
-            },
-            '资本性支出': {
-                'keywords': ['改造', '装修', '装潢', '改扩建', '扩建', '改建', 'ipv6改造', '工程改造基金', '改造基金', '专项改造'],
-                'type': 'CAPITAL',
-                'description': '大型装修改造支出及改造基金'
-            },
-            '租金支出': {
-                'keywords': ['租金', '租赁费', '整租租金'],
-                'type': 'EXPENSE',
-                'description': '房屋及场地租金'
-            },
-            '保证金退回': {
-                'keywords': ['保证金', '退回', '退还', '履约保证金', '质量保证金', '租赁诚意金', '意向金'],
-                'type': 'OUTFLOW',
-                'description': '各类保证金、诚意金的退还'
-            },
-            
-            # 4. 支出类 - 独立划拨 (NON-EXPENSE)
-            '资金划拨': {
-                'keywords': ['资金划拨', '转账', '划拨', '资金划拨至', '划拨资金'],
-                'type': 'TRANSFER',
-                'description': '内部账户间资金调动'
-            },
-            '税金划拨': {
-                'keywords': ['增值税转出', '进项税额转出', '转出未交', '预缴税款调拨', '税费调整', '税额调整'],
-                'type': 'TAX_TRANSFER',
-                'description': '非缴纳性质的税费调拨/调整'
-            },
-
-            # 5. 其他调整类
-            '押金类（非费用）': {
-                'keywords': ['押金', '诚意金', '租赁押金', '员工宿舍押金'],
-                'type': 'ASSET',
-                'description': '押金支付，属于资产类，非费用'
-            },
-            '计提确认类': {
-                'keywords': ['确认', '计提', '摊销', '损益结转', '结转'],
-                'type': 'ADJUSTMENT',
-                'description': '会计确认、摊销、结转，非实际现金支出'
-            },
-
-            # 6. 辅助类别：由特殊规则/科目名称映射/科目编码分支产出，入典以保证收支类型映射完整
-            '税金调整（非费用）': {
-                'keywords': ['增值税转出', '进项税额转出', '转出未交', '未交增值税', '预缴税款调拨', '税额调整', '税费调整'],
-                'type': 'TAX_TRANSFER',
-                'description': '增值税转出等非缴纳性税费调整，区别于实际缴纳的税金支出'
-            },
-            '销售费用': {
-                'keywords': ['销售费用'],
-                'type': 'EXPENSE',
-                'description': '科目编码6601归组的销售费用'
-            },
-            '营业外支出': {
-                'keywords': ['营业外支出'],
-                'type': 'EXPENSE',
-                'description': '科目编码6711归组的营业外支出（非经营性）'
-            },
-            '工会经费': {
-                'keywords': ['工会经费', '工会'],
-                'type': 'EXPENSE',
-                'description': '工会经费（科目名称归组）'
-            },
-            '折旧费用': {
-                'keywords': ['折旧'],
-                'type': 'ADJUSTMENT',
-                'description': '折旧计提，非现金支出'
-            },
-            '在职人工成本': {
-                'keywords': ['工资', '薪金', '社保', '公积金', '个税', '个人所得税'],
-                'type': 'EXPENSE',
-                'description': '在职人工成本（科目名称归组）'
-            },
-            '工程改造基金': {
-                'keywords': ['工程改造基金', '改造基金', '专项改造'],
-                'type': 'CAPITAL',
-                'description': '工程改造基金专项支出'
-            },
-            '未知款项退回': {
-                'keywords': ['误打款退还', '误打款', '错打款', '未知款项'],
-                'type': 'INFLOW',
-                'description': '误打款/未知款项退回（其他流入）'
-            }
-        }
-        # config.py 的 CLASSIFICATION_RULES：已有类别按字段覆盖，新类别追加到末尾
-        overrides = _cfg('CLASSIFICATION_RULES', None)
-        if isinstance(overrides, dict):
-            for cat, rule in overrides.items():
-                if cat in classification_rules and isinstance(rule, dict):
-                    classification_rules[cat].update(rule)
-                else:
-                    classification_rules[cat] = rule
-        return classification_rules
+        return load_classification_rules(config_module=_app_config)
     
     def classify_expenses(self):
         """费用分类逻辑，基于摘要和科目信息的关键字匹配

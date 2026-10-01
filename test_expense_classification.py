@@ -15,6 +15,7 @@
 import os
 import sys
 import gc
+import json
 import tempfile
 import time
 import unittest
@@ -23,6 +24,7 @@ from datetime import datetime
 import pandas as pd
 
 import expense_classification as ec
+import rules_loader
 from expense_classification import ExpenseClassifier, find_data_files, _cfg
 
 CLASSIFY_COLUMNS = ['期间', '凭证日期', '凭证号', '摘要', '贷方本币', '科目编码', '科目名称', '辅助核算']
@@ -133,6 +135,127 @@ class ClassificationRulesCase(unittest.TestCase):
             for kw in rule['keywords']:
                 self.assertNotIn('.*', kw, f'{cat} 关键词含正则写法: {kw}')
                 self.assertNotIn('*', kw, f'{cat} 关键词含正则写法: {kw}')
+
+
+class RulesLoaderCase(unittest.TestCase):
+    """rules_loader：JSON 数据文件加载 + config 覆盖（2026-10-01 规则数据化）"""
+
+    def setUp(self):
+        self._orig = ec._app_config
+        ec._app_config = None  # 强制无 config，保证确定性
+
+    def tearDown(self):
+        ec._app_config = self._orig
+
+    def _json_categories(self):
+        with open(rules_loader.DEFAULT_RULES_FILE, encoding='utf-8') as f:
+            return json.load(f)['categories']
+
+    def test_engine_matches_json_when_no_config(self):
+        """无 config 时，引擎 get_classification_rules 与 JSON 文件内容一致"""
+        rules = ExpenseClassifier().get_classification_rules()
+        self.assertEqual(rules, self._json_categories())
+        self.assertEqual(len(rules), 28)
+
+    def test_json_top_level_structure(self):
+        """JSON 顶层结构含 version/categories/notes，顺序约束说明入档"""
+        with open(rules_loader.DEFAULT_RULES_FILE, encoding='utf-8') as f:
+            payload = json.load(f)
+        self.assertEqual(payload['version'], 1)
+        self.assertIn('categories', payload)
+        self.assertIn('notes', payload)
+        notes = ' '.join(payload['notes'])
+        self.assertIn('POS刷卡手续费', notes)
+        self.assertIn('招商费用', notes)
+
+    def test_loader_explicit_none_returns_pure_rules(self):
+        """显式 config_module=None：确证无 config，返回纯 JSON 规则"""
+        rules = rules_loader.load_classification_rules(config_module=None)
+        self.assertEqual(rules, self._json_categories())
+
+    def test_auto_detect_without_config_returns_pure_rules(self):
+        """不传 config_module 且本机无 config.py 时，返回纯 JSON 规则"""
+        orig = rules_loader._try_import_config
+        rules_loader._try_import_config = lambda: None
+        try:
+            rules = rules_loader.load_classification_rules()
+        finally:
+            rules_loader._try_import_config = orig
+        self.assertEqual(rules, self._json_categories())
+
+    def test_override_update_and_append_semantics(self):
+        """config 覆盖语义与数据化前一致：同名按字段 update，新类别追加末尾"""
+        class _Stub:
+            CLASSIFICATION_RULES = {
+                '行政费用': {'keywords': ['快递费']},
+                '会议费': {'keywords': ['会议', '会务'], 'type': 'EXPENSE', 'description': '会议会务费'},
+            }
+
+        rules = rules_loader.load_classification_rules(config_module=_Stub)
+        self.assertEqual(len(rules), 29)  # 28 默认 + 1 新增
+        self.assertEqual(rules['行政费用']['keywords'], ['快递费'])
+        self.assertEqual(rules['行政费用']['type'], 'EXPENSE')  # 未覆盖字段保留
+        self.assertEqual(list(rules)[-1], '会议费')  # 追加在末尾
+
+    def test_explicit_none_ignores_engine_config(self):
+        """三态语义：显式 None 不读引擎 ec._app_config，显式传桩才生效"""
+        class _Stub:
+            CLASSIFICATION_RULES = {
+                '会议费': {'keywords': ['会议'], 'type': 'EXPENSE', 'description': '会议'},
+            }
+
+        ec._app_config = _Stub
+        rules_none = rules_loader.load_classification_rules(config_module=None)
+        self.assertNotIn('会议费', rules_none)
+        self.assertEqual(len(rules_none), 28)
+        rules_stub = rules_loader.load_classification_rules(config_module=ec._app_config)
+        self.assertIn('会议费', rules_stub)
+        self.assertEqual(len(rules_stub), 29)
+
+    def test_override_does_not_pollute_reload(self):
+        """每次调用返回全新 dict：破坏首次结果不影响后续加载"""
+        class _Stub:
+            CLASSIFICATION_RULES = {
+                '会议费': {'keywords': ['会务'], 'type': 'EXPENSE', 'description': '会务'},
+            }
+
+        first = rules_loader.load_classification_rules(config_module=_Stub)
+        self.assertIn('会议费', first)
+        first.pop('会议费')
+        first['行政费用']['keywords'] = ['被污染']
+        second = rules_loader.load_classification_rules(config_module=_Stub)
+        self.assertIn('会议费', second)  # 追加类别仍在
+        self.assertNotEqual(second['行政费用']['keywords'], ['被污染'])  # 未污染
+
+    def test_custom_rules_file(self):
+        """rules_file 参数可指定 JSON 路径（外部消费方场景）"""
+        payload = {'version': 1, 'description': '单测', 'categories': {
+            '测试类别': {'keywords': ['测试关键词'], 'type': 'EXPENSE', 'description': '单测'}}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'custom_rules.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(payload, f, ensure_ascii=False)
+            rules = rules_loader.load_classification_rules(rules_file=path, config_module=None)
+            self.assertEqual(list(rules), ['测试类别'])
+            self.assertEqual(rules['测试类别']['keywords'], ['测试关键词'])
+
+    def test_bare_dict_format_compat(self):
+        """兼容无顶层包装的裸 dict 规则文件"""
+        bare = {'唯一类别': {'keywords': ['唯一'], 'type': 'EXPENSE', 'description': '裸格式'}}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'bare_rules.json')
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump(bare, f, ensure_ascii=False)
+            rules = rules_loader.load_classification_rules(rules_file=path, config_module=None)
+            self.assertEqual(rules, bare)
+
+    def test_missing_file_raises(self):
+        """规则文件缺失时向上抛 FileNotFoundError，不静默吞异常"""
+        with self.assertRaises(FileNotFoundError):
+            rules_loader.load_classification_rules(
+                rules_file=os.path.join(tempfile.gettempdir(), 'definitely_missing_rules_12345.json'),
+                config_module=None,
+            )
 
 
 class ClassifyExpensesCase(unittest.TestCase):
